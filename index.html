@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>大富豪オンライン</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ロビー画面 -->
+    <section id="lobbyScreen" class="screen">
+      <h1>🃏 大富豪オンライン</h1>
+      <div class="card-panel">
+        <label>お名前
+          <input id="nameInput" type="text" maxlength="20" placeholder="例: たろう" />
+        </label>
+        <label>合言葉(部屋の合言葉)
+          <input id="passInput" type="text" maxlength="30" placeholder="例: yamada-house" />
+        </label>
+        <button id="joinBtn">参加 / 部屋を作る</button>
+        <p class="hint">同じ合言葉を入力した人同士が同じ部屋に入ります(2〜10人)。</p>
+      </div>
+    </section>
+
+    <!-- 待機room画面(ゲーム開始前) -->
+    <section id="waitingScreen" class="screen hidden">
+      <h1>待機ルーム: <span id="roomCodeLabel"></span></h1>
+      <div class="card-panel">
+        <h2>参加者(<span id="playerCount"></span>人)</h2>
+        <ul id="playerList"></ul>
+
+        <div id="hostControls" class="hidden">
+          <h2>特殊ルール設定</h2>
+          <div id="rulesForm" class="rules-grid"></div>
+          <button id="startGameBtn">ゲーム開始</button>
+        </div>
+        <div id="nonHostNote" class="hidden hint">ホストの開始を待っています…</div>
+      </div>
+      <div id="roundResultPanel" class="card-panel hidden">
+        <h2>前ラウンド結果</h2>
+        <ul id="roundResultList"></ul>
+        <button id="nextRoundBtn" class="hidden">次のラウンド開始</button>
+        <div id="nextRoundNote" class="hidden hint">ホストが次のラウンドを開始するのを待っています…</div>
+      </div>
+    </section>
+
+    <!-- ゲーム画面 -->
+    <section id="gameScreen" class="screen hidden">
+      <div id="topBar">
+        <div id="statusFlags"></div>
+        <div id="turnIndicator"></div>
+      </div>
+
+      <div id="opponents"></div>
+
+      <div id="fieldArea">
+        <h3>場</h3>
+        <div id="fieldCards"></div>
+      </div>
+
+      <div id="pendingBanner" class="hidden"></div>
+
+      <div id="myArea">
+        <h3>あなたの手札</h3>
+        <div id="myHand"></div>
+        <div id="actionBar">
+          <button id="playBtn">出す</button>
+          <button id="passBtn">パス</button>
+        </div>
+      </div>
+
+      <div id="logPanel">
+        <h4>ログ</h4>
+        <div id="logList"></div>
+      </div>
+    </section>
+
+    <div id="toast" class="hidden"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>

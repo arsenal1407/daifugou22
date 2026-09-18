@@ -1,0 +1,16 @@
+{
+  "name": "daifugo-online",
+  "version": "1.0.0",
+  "description": "大富豪オンライン対戦 (合言葉マッチルーム / 特殊ルール切替対応)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
