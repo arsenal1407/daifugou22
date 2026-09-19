@@ -109,11 +109,14 @@ function detectCombo(cards, rules) {
 function finalizeCombo(type, size, allCards, refCardsForStrength) {
   const topStrength = Math.max(...refCardsForStrength.map((c) => cardStrength(c)));
   const ranksIncluded = new Set(allCards.filter((c) => !c.joker).map((c) => c.rank));
+  const nonJokerSuits = new Set(allCards.filter((c) => !c.joker).map((c) => c.suit));
+  const uniformSuit = nonJokerSuits.size === 1 ? [...nonJokerSuits][0] : null;
   return {
     type,
     size,
     cards: allCards,
     topStrength,
+    uniformSuit,
     includesRank: (r) => ranksIncluded.has(r),
     rankCount: (r) => allCards.filter((c) => !c.joker && c.rank === r).length,
   };
@@ -153,6 +156,71 @@ function canBeat(combo, fieldCombo, reversed, rules = {}) {
   return combo.topStrength < fieldCombo.topStrength;
 }
 
+// しばり(マーク・数字)を含めた総合的な合法判定
+// ctx = { rules, reversed, suitLockActive, suitLockSuit, numberLockActive }
+function checkLegal(combo, fieldCombo, ctx) {
+  if (!canBeat(combo, fieldCombo, ctx.reversed, ctx.rules)) return false;
+  const isJokerSingle = combo.type === 'single' && combo.cards[0].joker;
+  if (!isJokerSingle) {
+    if (ctx.suitLockActive && combo.uniformSuit !== ctx.suitLockSuit) return false;
+    if (ctx.numberLockActive && fieldCombo && combo.topStrength !== fieldCombo.topStrength + 1) return false;
+  }
+  return true;
+}
+
+// 現在の手札の中で、今出せば合法になるカードのIDを集める(手札ハイライト用)
+// 場が空のときは何でも出せるため null を返す(ハイライト不要の合図)
+function computePlayableCardIds(hand, fieldCombo, ctx) {
+  if (!fieldCombo) return null;
+  const result = new Set();
+  const { type, size } = fieldCombo;
+
+  if (type === 'single') {
+    hand.forEach((card) => {
+      const combo = detectCombo([card], ctx.rules);
+      if (combo && checkLegal(combo, fieldCombo, ctx)) result.add(card.id);
+    });
+  } else if (type === 'group') {
+    const byRank = {};
+    hand.forEach((c) => {
+      if (!c.joker) (byRank[c.rank] = byRank[c.rank] || []).push(c);
+    });
+    Object.values(byRank).forEach((cardsOfRank) => {
+      if (cardsOfRank.length < size) return;
+      const candidate = cardsOfRank.slice(0, size);
+      const combo = detectCombo(candidate, ctx.rules);
+      if (combo && checkLegal(combo, fieldCombo, ctx)) {
+        cardsOfRank.forEach((c) => result.add(c.id));
+      }
+    });
+  } else if (type === 'sequence' && ctx.rules.sequence) {
+    const bySuit = {};
+    hand.forEach((c) => {
+      if (!c.joker) (bySuit[c.suit] = bySuit[c.suit] || []).push(c);
+    });
+    Object.values(bySuit).forEach((cardsOfSuit) => {
+      const sorted = cardsOfSuit.slice().sort((a, b) => rankStrength(a.rank) - rankStrength(b.rank));
+      let runStart = 0;
+      for (let i = 1; i <= sorted.length; i++) {
+        if (i === sorted.length || rankStrength(sorted[i].rank) !== rankStrength(sorted[i - 1].rank) + 1) {
+          const run = sorted.slice(runStart, i);
+          if (run.length >= size) {
+            for (let w = 0; w + size <= run.length; w++) {
+              const window = run.slice(w, w + size);
+              const combo = detectCombo(window, ctx.rules);
+              if (combo && checkLegal(combo, fieldCombo, ctx)) {
+                window.forEach((c) => result.add(c.id));
+              }
+            }
+          }
+          runStart = i;
+        }
+      }
+    });
+  }
+  return result;
+}
+
 module.exports = {
   RANK_ORDER,
   SUITS,
@@ -165,4 +233,6 @@ module.exports = {
   dealHands,
   detectCombo,
   canBeat,
+  checkLegal,
+  computePlayableCardIds,
 };

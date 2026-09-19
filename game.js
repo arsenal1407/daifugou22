@@ -1,4 +1,7 @@
-const { dealHands, detectCombo, canBeat, cardStrength } = require('./cards');
+const { dealHands, detectCombo, checkLegal, computePlayableCardIds, cardStrength } = require('./cards');
+
+const SUIT_LOCK_THRESHOLD = 3;
+const NUMBER_LOCK_THRESHOLD = 3;
 
 const DEFAULT_RULES = {
   sevenGive: true, // 7渡し
@@ -10,6 +13,8 @@ const DEFAULT_RULES = {
   quadRevolution: true, // 通常革命(同ランク4枚以上)
   classSystem: true, // 階級制(カード交換あり)
   spade3Return: true, // スペード3返し
+  suitLock: true, // 縛り(マーク)
+  numberLock: false, // 縛り(数字)
 };
 
 function makeRoom(code) {
@@ -26,6 +31,12 @@ function makeRoom(code) {
     passCount: 0,
     revolutionActive: false,
     elevenBackActive: false,
+    suitLockActive: false,
+    suitLockSuit: null,
+    suitStreakSuit: null,
+    suitStreakCount: 0,
+    numberLockActive: false,
+    numberStreakCount: 0,
     finishOrder: [],
     lastFinishOrder: null,
     pending: null, // { kind: 'give'|'discard', playerIndex, count }
@@ -87,6 +98,27 @@ function log(room, msg) {
   if (room.log.length > 100) room.log.shift();
 }
 
+// 場が流れる(リセットされる)ときに戻す一時的な状態(11バック・縛り)
+function resetFlowState(room) {
+  room.elevenBackActive = false;
+  room.suitLockActive = false;
+  room.suitLockSuit = null;
+  room.suitStreakSuit = null;
+  room.suitStreakCount = 0;
+  room.numberLockActive = false;
+  room.numberStreakCount = 0;
+}
+
+function buildCtx(room) {
+  return {
+    rules: room.rules,
+    reversed: room.revolutionActive !== room.elevenBackActive,
+    suitLockActive: room.suitLockActive,
+    suitLockSuit: room.suitLockSuit,
+    numberLockActive: room.numberLockActive,
+  };
+}
+
 function startGame(room) {
   const n = room.players.length;
   const { hands, deckCount } = dealHands(n);
@@ -103,7 +135,7 @@ function startGame(room) {
   room.fieldOwnerIndex = null;
   room.passCount = 0;
   room.revolutionActive = false;
-  room.elevenBackActive = false;
+  resetFlowState(room);
   room.finishOrder = [];
   room.pending = null;
   room.pendingSteps = [];
@@ -158,11 +190,6 @@ function playerIndexById(room, id) {
   return room.players.findIndex((p) => p.id === id);
 }
 
-function validateAndDetectCombo(room, cardIds) {
-  const combo = null;
-  return combo;
-}
-
 function play(room, playerId, cardIds) {
   const idx = playerIndexById(room, playerId);
   if (idx === -1) return { error: 'プレイヤーが見つかりません' };
@@ -178,10 +205,46 @@ function play(room, playerId, cardIds) {
   const combo = detectCombo(cards, room.rules);
   if (!combo) return { error: '出せない組み合わせです' };
 
-  const reversed = room.revolutionActive !== room.elevenBackActive; // XOR
   const fieldCombo = room.field ? room.field.combo : null;
-  if (!canBeat(combo, fieldCombo, reversed, room.rules)) {
-    return { error: 'その役では場の札に勝てません' };
+  const ctx = buildCtx(room);
+  if (!checkLegal(combo, fieldCombo, ctx)) {
+    return { error: 'その役では場の札に勝てません(縛りを含む)' };
+  }
+
+  const events = [];
+  const isJokerSingle = combo.type === 'single' && combo.cards[0].joker;
+
+  // 縛り(マーク)の更新
+  if (room.rules.suitLock && !isJokerSingle) {
+    if (combo.uniformSuit && combo.uniformSuit === room.suitStreakSuit) {
+      room.suitStreakCount += 1;
+    } else if (combo.uniformSuit) {
+      room.suitStreakSuit = combo.uniformSuit;
+      room.suitStreakCount = 1;
+    } else {
+      room.suitStreakSuit = null;
+      room.suitStreakCount = 0;
+    }
+    if (room.suitStreakCount >= SUIT_LOCK_THRESHOLD && !room.suitLockActive) {
+      room.suitLockActive = true;
+      room.suitLockSuit = room.suitStreakSuit;
+      log(room, `${suitName(room.suitLockSuit)}縛り発動!`);
+      events.push({ type: 'suitLock', suit: room.suitLockSuit });
+    }
+  }
+
+  // 縛り(数字)の更新: 直前の役からちょうど+1のランクが連続しているかを見る
+  if (room.rules.numberLock && !isJokerSingle) {
+    if (fieldCombo && combo.topStrength === fieldCombo.topStrength + 1) {
+      room.numberStreakCount += 1;
+    } else {
+      room.numberStreakCount = 1;
+    }
+    if (room.numberStreakCount >= NUMBER_LOCK_THRESHOLD && !room.numberLockActive) {
+      room.numberLockActive = true;
+      log(room, `数字縛り発動!`);
+      events.push({ type: 'numberLock' });
+    }
   }
 
   // 手札から除去
@@ -195,16 +258,19 @@ function play(room, playerId, cardIds) {
   if (room.rules.quadRevolution && combo.type === 'group' && combo.size >= 4) {
     room.revolutionActive = !room.revolutionActive;
     log(room, `革命発生!(通常革命)`);
+    events.push({ type: 'revolution', active: room.revolutionActive });
   }
-  if (room.rules.sequence && room.rules.sequenceRevolution && combo.type === 'sequence' && combo.size >= 5) {
+  if (room.rules.sequence && room.rules.sequenceRevolution && combo.type === 'sequence' && combo.size >= 4) {
     room.revolutionActive = !room.revolutionActive;
     log(room, `革命発生!(階段革命)`);
+    events.push({ type: 'revolution', active: room.revolutionActive });
   }
 
   // 11バック判定
   if (room.rules.jackBack && combo.includesRank('J')) {
     room.elevenBackActive = !room.elevenBackActive;
     log(room, `11バック${room.elevenBackActive ? '発動' : '解除'}!`);
+    events.push({ type: 'elevenBack', active: room.elevenBackActive });
   }
 
   const wentOut = player.hand.length === 0;
@@ -212,6 +278,17 @@ function play(room, playerId, cardIds) {
     player.finished = true;
     room.finishOrder.push(idx);
     log(room, `${player.name} が上がりました!`);
+  }
+
+  // 8切り・7渡し・10捨てのイベント表示(実際の処理は下のステップ/finalizeで行う)
+  if (room.rules.eightCut && combo.includesRank('8')) {
+    events.push({ type: 'eightCut' });
+  }
+  if (!wentOut && room.rules.sevenGive && combo.includesRank('7')) {
+    events.push({ type: 'sevenGive' });
+  }
+  if (!wentOut && room.rules.tenDiscard && combo.includesRank('10')) {
+    events.push({ type: 'tenDiscard' });
   }
 
   // 7渡し・10捨てのペンディング積み上げ(上がった場合はスキップ = 渡す/捨てる札がないため)
@@ -229,7 +306,7 @@ function play(room, playerId, cardIds) {
   room.pendingPlayerIndex = idx;
 
   processNextPendingStep(room);
-  return { ok: true };
+  return { ok: true, events };
 }
 
 function describeCombo(combo) {
@@ -263,7 +340,7 @@ function finalizeAfterPlay(room) {
 
   if (room.pendingEightCut) {
     room.field = null;
-    room.elevenBackActive = false;
+    resetFlowState(room);
     room.passCount = 0;
     room.fieldOwnerIndex = null;
     room.turnIndex = player.finished ? nextActiveIndex(room, playerIndex) : playerIndex;
@@ -348,7 +425,7 @@ function pass(room, playerId) {
   if (room.passCount >= remaining - 1) {
     // 場を流す
     room.field = null;
-    room.elevenBackActive = false;
+    resetFlowState(room);
     room.passCount = 0;
     const ownerIdx = room.fieldOwnerIndex;
     if (ownerIdx === null || room.players[ownerIdx].finished) {
@@ -398,7 +475,7 @@ function startNextRound(room, requesterId) {
   room.fieldOwnerIndex = null;
   room.passCount = 0;
   room.revolutionActive = false;
-  room.elevenBackActive = false;
+  resetFlowState(room);
   room.finishOrder = [];
   room.pending = null;
   room.pendingSteps = [];
@@ -461,6 +538,9 @@ function exchangeReturn(room, playerId, cardIds) {
 
 function serializeForPlayer(room, playerId) {
   const me = findPlayer(room, playerId);
+  const fieldCombo = room.field ? room.field.combo : null;
+  const ctx = buildCtx(room);
+  const playableSet = me ? computePlayableCardIds(me.hand, fieldCombo, ctx) : null;
   return {
     code: room.code,
     hostId: room.hostId,
@@ -478,6 +558,7 @@ function serializeForPlayer(room, playerId) {
     })),
     myHand: me ? me.hand : [],
     myId: playerId,
+    playableCardIds: playableSet ? Array.from(playableSet) : null,
     turnPlayerId: room.players[room.turnIndex] ? room.players[room.turnIndex].id : null,
     field: room.field
       ? {
@@ -488,6 +569,9 @@ function serializeForPlayer(room, playerId) {
       : null,
     revolutionActive: room.revolutionActive,
     elevenBackActive: room.elevenBackActive,
+    suitLockActive: room.suitLockActive,
+    suitLockSuit: room.suitLockSuit,
+    numberLockActive: room.numberLockActive,
     pending: room.pending
       ? {
           kind: room.pending.kind,

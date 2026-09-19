@@ -107,6 +107,9 @@ io.on('connection', (socket) => {
       socket.emit('error', { message: res.error });
       return;
     }
+    if (res.events && res.events.length > 0) {
+      io.to(code).emit('specialEvent', { events: res.events });
+    }
     broadcast(code);
   });
 
